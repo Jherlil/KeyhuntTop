@@ -39,6 +39,10 @@ void Secp256K1::Init() {
   G.z.SetInt32(1);
   order.SetBase16("FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEBAAEDCE6AF48A03BBFD25E8CD0364141");
 
+  // Constants for curve endomorphism (GLV)
+  lambda.SetBase16("5363AD4CC05C30E0A5261C028812645A122E22EA20816678DF02967C1B23BD72");
+  beta.SetBase16("7AE96A2B657C07106E64479EAC3434E99CF0497512F58995C1396C28719501EE");
+
   Int::InitK1(&order);
 
   // Compute Generator table
@@ -786,5 +790,39 @@ void Secp256K1::GetHash160_fromX(int type,unsigned char prefix,
   break;
 
   }
+}
+
+// -------------------------------------------------------------------
+// Experimental endomorphism helper
+Point Secp256K1::Endomorphism(Point &p) {
+  Point r;
+  r.x.ModMulK1(&p.x, &beta);
+  r.y.Set(&p.y);
+  r.z.Set(&p.z);
+  return r;
+}
+
+// Split scalar into two halves (~128-bit each)
+void Secp256K1::SplitScalar128(Int *k, Int *k1, Int *k2) {
+  for (int i = 0; i < 16; i++) {
+    k1->SetByte(i, k->GetByte(i));
+    k2->SetByte(i, k->GetByte(i + 16));
+  }
+  for (int i = 16; i < 32; i++) {
+    k1->SetByte(i, 0);
+    k2->SetByte(i, 0);
+  }
+}
+
+// Scalar multiplication using naive GLV decomposition
+Point Secp256K1::ScalarMultiplicationGLV(Point &P, Int *scalar) {
+  Int k1, k2;
+  SplitScalar128(scalar, &k1, &k2);
+  Point r1 = ScalarMultiplication(P, &k1);
+  Point phi = Endomorphism(P);
+  Point r2 = ScalarMultiplication(phi, &k2);
+  Point R = Add(r1, r2);
+  R.Reduce();
+  return R;
 }
 

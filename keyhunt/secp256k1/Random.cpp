@@ -1,145 +1,72 @@
 /*
- * This file is part of the BSGS distribution (https://github.com/JeanLucPons/BSGS).
- * Copyright (c) 2020 Jean Luc PONS.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation, version 3.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU
- * General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program. If not, see <http://www.gnu.org/licenses/>.
-*/
-
+ * xoshiro256** random number generator implementation
+ * Replaces Mersenne Twister for higher performance
+ */
 
 #include "Random.h"
+#include <stdint.h>
 
 #if defined(_WIN64) && !defined(__CYGWIN__)
+// Windows fallback will not use getrandom
 #else
 #include <sys/random.h>
 #endif
 
-#ifdef __unix__
-#ifdef __CYGWIN__
-#else
-#include <linux/random.h>
-#endif
-#endif
+// xoshiro256** state
+static uint64_t s[4];
 
-#define  RK_STATE_LEN 624
-
-/* State of the RNG */
-typedef struct rk_state_
-{
-  unsigned long key[RK_STATE_LEN];
-  int pos;
-} rk_state;
-
-rk_state localState;
-
-/* Maximum generated random value */
-#define RK_MAX 0xFFFFFFFFUL
-
-void rk_seed(unsigned long seed, rk_state *state)
-{
-  int pos;
-  seed &= 0xffffffffUL;
-
-  /* Knuth's PRNG as used in the Mersenne Twister reference implementation */
-  for (pos=0; pos<RK_STATE_LEN; pos++)
-  {
-    state->key[pos] = seed;
-    seed = (1812433253UL * (seed ^ (seed >> 30)) + pos + 1) & 0xffffffffUL;
-  }
-
-  state->pos = RK_STATE_LEN;
+static inline uint64_t rotl(const uint64_t x, int k) {
+    return (x << k) | (x >> (64 - k));
 }
 
-/* Magic Mersenne Twister constants */
-#define N 624
-#define M 397
-#define MATRIX_A 0x9908b0dfUL
-#define UPPER_MASK 0x80000000UL
-#define LOWER_MASK 0x7fffffffUL
-
-#ifdef _WIN64
-// Disable "unary minus operator applied to unsigned type, result still unsigned" warning.
-#pragma warning(disable : 4146)
-#endif
-
-/* Slightly optimised reference implementation of the Mersenne Twister */
-inline unsigned long rk_random(rk_state *state)
-{
-  unsigned long y;
-
-  if (state->pos == RK_STATE_LEN)
-  {
-    int i;
-
-    for (i=0;i<N-M;i++)
-    {
-      y = (state->key[i] & UPPER_MASK) | (state->key[i+1] & LOWER_MASK);
-      state->key[i] = state->key[i+M] ^ (y>>1) ^ (-(y & 1) & MATRIX_A);
-    }
-    for (;i<N-1;i++)
-    {
-      y = (state->key[i] & UPPER_MASK) | (state->key[i+1] & LOWER_MASK);
-      state->key[i] = state->key[i+(M-N)] ^ (y>>1) ^ (-(y & 1) & MATRIX_A);
-    }
-    y = (state->key[N-1] & UPPER_MASK) | (state->key[0] & LOWER_MASK);
-    state->key[N-1] = state->key[M-1] ^ (y>>1) ^ (-(y & 1) & MATRIX_A);
-
-    state->pos = 0;
-  }
-  
-  y = state->key[state->pos++];
-
-  /* Tempering */
-  y ^= (y >> 11);
-  y ^= (y << 7) & 0x9d2c5680UL;
-  y ^= (y << 15) & 0xefc60000UL;
-  y ^= (y >> 18);
-
-  return y;
+static uint64_t splitmix64(uint64_t *seed) {
+    uint64_t z = (*seed += 0x9e3779b97f4a7c15ULL);
+    z = (z ^ (z >> 30)) * 0xbf58476d1ce4e5b9ULL;
+    z = (z ^ (z >> 27)) * 0x94d049bb133111ebULL;
+    return z ^ (z >> 31);
 }
 
-inline double rk_double(rk_state *state)
-{
-	/* shifts : 67108864 = 0x4000000, 9007199254740992 = 0x20000000000000 */
-	long a = rk_random(state) >> 5, b = rk_random(state) >> 6;
-	return (a * 67108864.0 + b) / 9007199254740992.0;
+static inline uint64_t next(void) {
+    const uint64_t result = rotl(s[1] * 5ULL, 7) * 9ULL;
+
+    const uint64_t t = s[1] << 17;
+
+    s[2] ^= s[0];
+    s[3] ^= s[1];
+    s[1] ^= s[2];
+    s[0] ^= s[3];
+
+    s[2] ^= t;
+    s[3] = rotl(s[3], 45);
+
+    return result;
 }
 
-// Initialise the random generator with the specified seed
+// seed the generator
 void rseed(unsigned long seed) {
-	rk_seed(seed,&localState);
-	//srand(seed);
+    uint64_t x = seed;
+    for (int i = 0; i < 4; ++i) {
+        s[i] = splitmix64(&x);
+    }
 }
 
 #if defined(_WIN64) && !defined(__CYGWIN__)
 unsigned long rndl() {
-	return rk_random(&localState);
+    return (unsigned long)next();
 }
 #else
 unsigned long rndl() {
-	unsigned long r;
-	int bytes_read = getrandom(&r, sizeof(unsigned long), GRND_NONBLOCK );
-	if (bytes_read > 0) {
-		return r;
-	}
-	else	{
-		/*Fail safe */
-		return rk_random(&localState);
-	}
+    unsigned long r;
+    int bytes_read = getrandom(&r, sizeof(unsigned long), GRND_NONBLOCK);
+    if (bytes_read > 0) {
+        return r;
+    }
+    return (unsigned long)next();
 }
-	
 #endif
 
 // Returns a uniform distributed double value in the interval ]0,1[
 double rnd() {
-	return rk_double(&localState);
+    const uint64_t x = next();
+    return (x >> 11) * (1.0 / 9007199254740992.0); // 2^53
 }
