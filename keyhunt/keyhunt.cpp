@@ -23,6 +23,7 @@ email: albertobsd@gmail.com
 #include "secp256k1/Int.h"
 #include "secp256k1/IntGroup.h"
 #include "secp256k1/Random.h"
+#include "cache.h"
 
 #include "hash/sha256.h"
 #include "hash/ripemd160.h"
@@ -307,6 +308,10 @@ int FLAGRAWDATA	= 0;
 int FLAGRANDOM = 0;
 int FLAG_N = 0;
 int FLAGPRECALCUTED_P_FILE = 0;
+size_t PUBKEY_CACHE_SIZE = 0;
+LRUCache *pubkeyCache = NULL;
+char *TABLE22_PATH = NULL;
+int FLAG_TABLE22 = 0;
 
 int bitrange;
 char *str_N;
@@ -449,11 +454,32 @@ int main(int argc, char **argv)	{
 	int s;
 #endif
 
-	srand(time(NULL));
+        srand(time(NULL));
 
-	secp = new Secp256K1();
-	secp->Init();
-	OUTPUTSECONDS.SetInt32(30);
+        // Pre-scan for cache and table parameters
+        for(int pi=1; pi<argc; ++pi) {
+                if(strcmp(argv[pi],"-P")==0 && pi+1<argc) {
+                        PUBKEY_CACHE_SIZE = strtoull(argv[pi+1],NULL,10);
+                        ++pi;
+                } else if(strcmp(argv[pi],"-T")==0 && pi+1<argc) {
+                        FLAG_TABLE22 = 1;
+                        TABLE22_PATH = argv[pi+1];
+                        ++pi;
+                }
+        }
+
+        secp = new Secp256K1();
+        secp->useTable22 = FLAG_TABLE22;
+        secp->Init();
+        if(FLAG_TABLE22 && TABLE22_PATH) {
+                if(!secp->LoadTable22(TABLE22_PATH)) {
+                        printf("[I] Generating 22-bit table, please wait...\n");
+                        secp->SaveTable22(TABLE22_PATH);
+                }
+        }
+        if(PUBKEY_CACHE_SIZE>0)
+                pubkeyCache = new LRUCache(PUBKEY_CACHE_SIZE);
+        OUTPUTSECONDS.SetInt32(30);
 	ZERO.SetInt32(0);
 	ONE.SetInt32(1);
 	BSGS_GROUP_SIZE.SetInt32(CPU_GRP_SIZE);
@@ -486,7 +512,7 @@ int main(int argc, char **argv)	{
 	
 	printf("[+] Version %s, developed by AlbertoBSD\n",version);
 
-	while ((c = getopt(argc, argv, "deh6MqRSB:b:c:C:E:f:I:k:l:m:N:n:p:r:s:t:v:G:8:z:")) != -1) {
+        while ((c = getopt(argc, argv, "deh6MqRSB:b:c:C:E:f:I:k:l:m:N:n:p:r:s:t:v:G:8:z:P:T:")) != -1) {
 		switch(c) {
 			case 'h':
 				menu();
@@ -770,6 +796,15 @@ int main(int argc, char **argv)	{
 				}
 				printf("[+] Bloom Size Multiplier %i\n",FLAGBLOOMMULTIPLIER);
 			break;
+                        case 'P':
+                                PUBKEY_CACHE_SIZE = strtoull(optarg,NULL,10);
+                                printf("[+] Public key cache size %zu\n", PUBKEY_CACHE_SIZE);
+                        break;
+                        case 'T':
+                                FLAG_TABLE22 = 1;
+                                TABLE22_PATH = optarg;
+                                printf("[+] Using 22-bit table file %s\n", TABLE22_PATH);
+                        break;
 			default:
 				fprintf(stderr,"[E] Unknow opcion -%c\n",c);
 				exit(EXIT_FAILURE);

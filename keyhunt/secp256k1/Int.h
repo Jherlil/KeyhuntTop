@@ -156,6 +156,7 @@ public:
   uint32_t GetInt32();
   int GetBit(uint32_t n);
   unsigned char GetByte(int n);
+  uint32_t GetBits(uint32_t startBit, uint32_t nBits);
   void Get32Bytes(unsigned char *buff);
 
   char* GetBase2();

@@ -292,6 +292,16 @@ unsigned char Int::GetByte(int n) {
 
 }
 
+uint32_t Int::GetBits(uint32_t startBit, uint32_t nBits) {
+  uint32_t word = startBit / 32;
+  uint32_t offset = startBit % 32;
+  uint64_t value = bits[word] >> offset;
+  if(offset + nBits > 32 && word + 1 < NB32BLOCK) {
+    value |= ((uint64_t)bits[word+1]) << (32 - offset);
+  }
+  return (uint32_t)(value & (((uint64_t)1 << nBits) - 1));
+}
+
 void Int::Set32Bytes(unsigned char *bytes) {
 
   CLEAR();
