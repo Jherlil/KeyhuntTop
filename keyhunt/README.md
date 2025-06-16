@@ -1327,6 +1327,13 @@ Available in: https://github.com/WanderingPhilosopher/keyhunt
 Also thanks to @XopMC
 Available in: https://github.com/XopMC/keyhunt-win
 
+## Public key cache
+
+Keyhunt can store recently computed public keys in a cache to avoid
+recomputation. Use the `-L` command line option to specify the cache
+size. Setting `-L 0` disables the cache. Larger sizes may speed up
+searches at the cost of additional memory usage.
+
 
 ## Thanks
 
