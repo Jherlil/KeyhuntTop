@@ -97,6 +97,14 @@ First compile:
 make
 ```
 
+To build with AVX2 optimizations enable:
+
+```
+make AVX2=1
+```
+
+Use `SSE41=1` to force SSE4.1 on older CPUs.
+
 if you have problems compiling the `main` version you can compile the `legacy` version
 
 ```
@@ -1327,6 +1335,11 @@ Available in: https://github.com/WanderingPhilosopher/keyhunt
 Also thanks to @XopMC
 Available in: https://github.com/XopMC/keyhunt-win
 
+## Cache and giant table
+
+Use `-P <entries>` to enable an LRU cache for computed public keys. Larger values improve speed at the cost of memory.
+
+The option `-T <file>` activates a pre-computed 22-bit table (~5GB). On first run the table is generated and saved to the specified path.
 
 ## Thanks
 

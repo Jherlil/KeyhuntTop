@@ -70,6 +70,15 @@ public:
   Int P;                   // Prime for the finite field
   Int   order;             // Curve order
 
+  // Huge 22-bit window table
+  bool useTable22;
+  Point *GTable22;
+  static const int WINDOW22_BITS = 22;
+  static const int WINDOW22_SIZE = 1 << WINDOW22_BITS;
+  static const int WINDOW22_NUM = 12;
+  bool LoadTable22(const char *path);
+  bool SaveTable22(const char *path);
+
 private:
 
   uint8_t GetByte(char *str,int idx);

@@ -20,10 +20,15 @@
 #include "SECP256k1.h"
 #include "Point.h"
 #include "../util.h"
+#include "../cache.h"
+
+extern LRUCache *pubkeyCache;
 #include "../hash/sha256.h"
 #include "../hash/ripemd160.h"
 
 Secp256K1::Secp256K1() {
+  useTable22 = false;
+  GTable22 = nullptr;
 }
 
 void Secp256K1::Init() {
@@ -53,38 +58,98 @@ void Secp256K1::Init() {
     GTable[i * 256 + 255] = N; // Dummy point for check function
   }
 
+  if(useTable22) {
+    size_t total = (size_t)WINDOW22_SIZE * WINDOW22_NUM;
+    GTable22 = new Point[total];
+    Point base(G);
+    // Precompute multiples for each window
+    for(int w=0; w<WINDOW22_NUM; ++w) {
+      size_t offset = (size_t)w * WINDOW22_SIZE;
+      GTable22[offset] = Point();
+      Point cur(base);
+      for(size_t i=1;i<WINDOW22_SIZE;i++) {
+        GTable22[offset+i] = cur;
+        cur = AddDirect(cur, base);
+      }
+      // Next window base is doubled WINDOW22_BITS times
+      for(int b=0;b<WINDOW22_BITS;b++) base = DoubleDirect(base);
+    }
+  }
+
 }
 
 Secp256K1::~Secp256K1() {
+  if(GTable22) {
+    delete[] GTable22;
+  }
 }
 
 Point Secp256K1::ComputePublicKey(Int *privKey) {
-  int i = 0;
-  uint8_t b;
-  Point Q;
-  Q.Clear();
-  // Search first significant byte
-  for (i = 0; i < 32; i++) {
-    b = privKey->GetByte(i);
-    if(b)
-      break;
+  Point cached;
+  if(pubkeyCache && pubkeyCache->get(*privKey, cached)) {
+    return cached;
   }
-  Q = GTable[256 * i + (b-1)];
-  i++;
+  if(useTable22 && GTable22) {
+    Point Q;
+    Q.Clear();
+    for(int w=0; w<WINDOW22_NUM; ++w) {
+      uint32_t bits = privKey->GetBits(w*WINDOW22_BITS, WINDOW22_BITS);
+      if(bits)
+        Q = Add2(Q, GTable22[(size_t)w*WINDOW22_SIZE + bits]);
+    }
+    Q.Reduce();
+    if(pubkeyCache) pubkeyCache->put(*privKey, Q);
+    return Q;
+  } else {
+    int i = 0;
+    uint8_t b;
+    Point Q;
+    Q.Clear();
+    // Search first significant byte
+    for (i = 0; i < 32; i++) {
+      b = privKey->GetByte(i);
+      if(b)
+        break;
+    }
+    Q = GTable[256 * i + (b-1)];
+    i++;
 
-  for(; i < 32; i++) {
-    b = privKey->GetByte(i);
-    if(b)
-      Q = Add2(Q, GTable[256 * i + (b-1)]);
+    for(; i < 32; i++) {
+      b = privKey->GetByte(i);
+      if(b)
+        Q = Add2(Q, GTable[256 * i + (b-1)]);
+    }
+    Q.Reduce();
+    if(pubkeyCache) pubkeyCache->put(*privKey, Q);
+    return Q;
   }
-  Q.Reduce();
-  return Q;
 }
 
 Point Secp256K1::NextKey(Point &key) {
   // Input key must be reduced and different from G
   // in order to use AddDirect
   return AddDirect(key,G);
+}
+
+bool Secp256K1::LoadTable22(const char *path) {
+  if(!path) return false;
+  FILE *f = fopen(path, "rb");
+  if(!f) return false;
+  size_t total = (size_t)WINDOW22_SIZE * WINDOW22_NUM;
+  if(!GTable22) GTable22 = new Point[total];
+  size_t r = fread(GTable22, sizeof(Point), total, f);
+  fclose(f);
+  return r == total;
+}
+
+bool Secp256K1::SaveTable22(const char *path) {
+  if(!path || !GTable22) return false;
+  FILE *f = fopen(path, "wb");
+  if(!f) return false;
+  size_t total = (size_t)WINDOW22_SIZE * WINDOW22_NUM;
+  size_t w = fwrite(GTable22, sizeof(Point), total, f);
+  fclose(f);
+  return w == total;
 }
 
 uint8_t Secp256K1::GetByte(char *str, int idx) {
