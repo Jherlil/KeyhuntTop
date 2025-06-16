@@ -97,7 +97,16 @@ First compile:
 make
 ```
 
-if you have problems compiling the `main` version you can compile the `legacy` version
+Keyhunt will try to detect your CPU SIMD capabilities (AVX2 or SSE4.1) and
+use the best instruction set available. You can override this detection by
+passing a `SIMD` parameter. For example to force AVX2 or SSE4 builds run:
+
+```
+make SIMD=avx2   # build with AVX2 instructions
+make SIMD=sse4   # build with SSE4.1 instructions
+```
+
+If you have problems compiling the `main` version you can compile the `legacy` version
 
 ```
 make legacy
