@@ -35,6 +35,8 @@ email: albertobsd@gmail.com
 #include <pthread.h>
 #include <sys/random.h>
 #endif
+#include <unordered_map>
+#include <list>
 
 #ifdef __unix__
 #ifdef __CYGWIN__
@@ -412,6 +414,55 @@ Int lambda,lambda2,beta,beta2;
 
 Secp256K1 *secp;
 
+// Public key cache variables
+size_t PUBKEY_CACHE_MAX = 0;
+bool PUBKEY_CACHE_ENABLED = false;
+
+struct IntHash {
+    std::size_t operator()(const Int &a) const noexcept {
+        size_t h = 0;
+        for(int i=0;i<4;i++) {
+            h ^= std::hash<uint64_t>{}(a.bits64[i]) + 0x9e3779b97f4a7c15ULL + (h<<6) + (h>>2);
+        }
+        return h;
+    }
+};
+
+struct IntEq {
+    bool operator()(const Int &a,const Int &b) const noexcept {
+        for(int i=0;i<4;i++) if(a.bits64[i]!=b.bits64[i]) return false;
+        return true;
+    }
+};
+
+struct CacheEntry {
+    Point point;
+    std::list<Int>::iterator it;
+};
+
+static std::unordered_map<Int, CacheEntry, IntHash, IntEq> pubkey_cache;
+static std::list<Int> pubkey_lru;
+
+static Point ComputePublicKeyCached(Int *privKey) {
+    if(!PUBKEY_CACHE_ENABLED || PUBKEY_CACHE_MAX==0)
+        return secp->ComputePublicKey(privKey);
+    auto it = pubkey_cache.find(*privKey);
+    if(it != pubkey_cache.end()) {
+        pubkey_lru.splice(pubkey_lru.begin(), pubkey_lru, it->second.it);
+        return it->second.point;
+    }
+    Point p = secp->ComputePublicKey(privKey);
+    if(pubkey_cache.size() >= PUBKEY_CACHE_MAX) {
+        Int old = pubkey_lru.back();
+        pubkey_lru.pop_back();
+        pubkey_cache.erase(old);
+    }
+    pubkey_lru.push_front(*privKey);
+    auto it_lru = pubkey_lru.begin();
+    pubkey_cache.emplace(*privKey, CacheEntry{p, it_lru});
+    return p;
+}
+
 int main(int argc, char **argv)	{
 	char buffer[2048];
 	char rawvalue[32];
@@ -486,7 +537,7 @@ int main(int argc, char **argv)	{
 	
 	printf("[+] Version %s, developed by AlbertoBSD\n",version);
 
-	while ((c = getopt(argc, argv, "deh6MqRSB:b:c:C:E:f:I:k:l:m:N:n:p:r:s:t:v:G:8:z:")) != -1) {
+       while ((c = getopt(argc, argv, "deh6MqRSB:b:c:C:E:f:I:k:l:m:N:n:p:r:s:t:v:G:8:z:L:")) != -1) {
 		switch(c) {
 			case 'h':
 				menu();
@@ -768,9 +819,20 @@ int main(int argc, char **argv)	{
 				if(FLAGBLOOMMULTIPLIER <= 0)	{
 					FLAGBLOOMMULTIPLIER = 1;
 				}
-				printf("[+] Bloom Size Multiplier %i\n",FLAGBLOOMMULTIPLIER);
-			break;
-			default:
+                        printf("[+] Bloom Size Multiplier %i\n",FLAGBLOOMMULTIPLIER);
+                        break;
+                        case 'L':
+                                PUBKEY_CACHE_MAX = strtoull(optarg,NULL,10);
+                                if(PUBKEY_CACHE_MAX>0){
+                                        PUBKEY_CACHE_ENABLED = true;
+                                        printf("[+] Public key cache entries %zu\n",PUBKEY_CACHE_MAX);
+                                } else {
+                                        PUBKEY_CACHE_ENABLED = false;
+                                        PUBKEY_CACHE_MAX = 0;
+                                        printf("[+] Public key cache disabled\n");
+                                }
+                        break;
+                        default:
 				fprintf(stderr,"[E] Unknow opcion -%c\n",c);
 				exit(EXIT_FAILURE);
 			break;
@@ -1306,12 +1368,12 @@ int main(int argc, char **argv)	{
 
 
 
-		BSGS_MP = secp->ComputePublicKey(&BSGS_M);
-		BSGS_MP_double = secp->ComputePublicKey(&BSGS_M_double);
-		BSGS_MP2 = secp->ComputePublicKey(&BSGS_M2);
-		BSGS_MP2_double = secp->ComputePublicKey(&BSGS_M2_double);
-		BSGS_MP3 = secp->ComputePublicKey(&BSGS_M3);
-		BSGS_MP3_double = secp->ComputePublicKey(&BSGS_M3_double);
+		BSGS_MP = ComputePublicKeyCached(&BSGS_M);
+		BSGS_MP_double = ComputePublicKeyCached(&BSGS_M_double);
+		BSGS_MP2 = ComputePublicKeyCached(&BSGS_M2);
+		BSGS_MP2_double = ComputePublicKeyCached(&BSGS_M2_double);
+		BSGS_MP3 = ComputePublicKeyCached(&BSGS_M3);
+		BSGS_MP3_double = ComputePublicKeyCached(&BSGS_M3_double);
 		
 		BSGS_AMP2.reserve(32);
 		BSGS_AMP3.reserve(32);
@@ -2458,7 +2520,7 @@ void *thread_process_minikeys(void *vargp)	{
 					
 					for(k = 0; k < 4; k++)	{
 						key_mpz[k].Set32Bytes((uint8_t*)rawvalue[k]);
-						publickey[k] = secp->ComputePublicKey(&key_mpz[k]);
+						publickey[k] = ComputePublicKeyCached(&key_mpz[k]);
 					}
 					
 					secp->GetHash160(P2PKH,false,publickey[0],publickey[1],publickey[2],publickey[3],(uint8_t*)publickeyhashrmd160_uncompress[0],(uint8_t*)publickeyhashrmd160_uncompress[1],(uint8_t*)publickeyhashrmd160_uncompress[2],(uint8_t*)publickeyhashrmd160_uncompress[3]);
@@ -2587,7 +2649,7 @@ void *thread_process(void *vargp)	{
 				temp_stride.SetInt32(CPU_GRP_SIZE / 2);
 				temp_stride.Mult(&stride);
 				key_mpz.Add(&temp_stride);
-	 			startP = secp->ComputePublicKey(&key_mpz);
+	 			startP = ComputePublicKeyCached(&key_mpz);
 				key_mpz.Sub(&temp_stride);
 
 				for(i = 0; i < hLength; i++) {
@@ -2800,7 +2862,7 @@ void *thread_process(void *vargp)	{
 														keyfound.SetInt32(k);
 														keyfound.Mult(&stride);
 														keyfound.Add(&key_mpz);
-														publickey = secp->ComputePublicKey(&keyfound);
+														publickey = ComputePublicKeyCached(&keyfound);
 														switch(l)	{
 															case 0:	//Original point, prefix 02
 																if(publickey.y.IsOdd())	{	//if the current publickey is odd that means, we need to negate the keyfound to get the correct key
@@ -2864,7 +2926,7 @@ void *thread_process(void *vargp)	{
 														keyfound.Mult(&stride);
 														keyfound.Add(&key_mpz);
 														
-														publickey = secp->ComputePublicKey(&keyfound);
+														publickey = ComputePublicKeyCached(&keyfound);
 														secp->GetHash160(P2PKH,true,publickey,(uint8_t*)publickeyhashrmd160);
 														if(memcmp(publickeyhashrmd160_endomorphism[l][k],publickeyhashrmd160,20) != 0)	{
 															keyfound.Neg();
@@ -2890,7 +2952,7 @@ void *thread_process(void *vargp)	{
 														switch(l)	{
 															case 6:
 															case 7:
-																publickey = secp->ComputePublicKey(&keyfound);
+																publickey = ComputePublicKeyCached(&keyfound);
 																secp->GetHash160(P2PKH,false,publickey,(uint8_t*)publickeyhashrmd160_uncompress[0]);
 																if(memcmp(publickeyhashrmd160_endomorphism[l][k],publickeyhashrmd160_uncompress[0],20) != 0){
 																	keyfound.Neg();
@@ -2900,7 +2962,7 @@ void *thread_process(void *vargp)	{
 															case 8:
 															case 9:
 																keyfound.ModMulK1order(&lambda);
-																publickey = secp->ComputePublicKey(&keyfound);
+																publickey = ComputePublicKeyCached(&keyfound);
 																secp->GetHash160(P2PKH,false,publickey,(uint8_t*)publickeyhashrmd160_uncompress[0]);
 																if(memcmp(publickeyhashrmd160_endomorphism[l][k],publickeyhashrmd160_uncompress[0],20) != 0){
 																	keyfound.Neg();
@@ -2910,7 +2972,7 @@ void *thread_process(void *vargp)	{
 															case 10:
 															case 11:
 																keyfound.ModMulK1order(&lambda2);
-																publickey = secp->ComputePublicKey(&keyfound);
+																publickey = ComputePublicKeyCached(&keyfound);
 																secp->GetHash160(P2PKH,false,publickey,(uint8_t*)publickeyhashrmd160_uncompress[0]);
 																if(memcmp(publickeyhashrmd160_endomorphism[l][k],publickeyhashrmd160_uncompress[0],20) != 0){
 																	keyfound.Neg();
@@ -2952,7 +3014,7 @@ void *thread_process(void *vargp)	{
 													switch(l)	{
 														case 0:
 														case 1:
-															publickey = secp->ComputePublicKey(&keyfound);
+															publickey = ComputePublicKeyCached(&keyfound);
 															generate_binaddress_eth(publickey,(uint8_t*)publickeyhashrmd160_uncompress[0]);
 															if(memcmp(publickeyhashrmd160_endomorphism[l][k],publickeyhashrmd160_uncompress[0],20) != 0){
 																keyfound.Neg();
@@ -2962,7 +3024,7 @@ void *thread_process(void *vargp)	{
 														case 2:
 														case 3:
 															keyfound.ModMulK1order(&lambda);
-															publickey = secp->ComputePublicKey(&keyfound);
+															publickey = ComputePublicKeyCached(&keyfound);
 															generate_binaddress_eth(publickey,(uint8_t*)publickeyhashrmd160_uncompress[0]);
 															if(memcmp(publickeyhashrmd160_endomorphism[l][k],publickeyhashrmd160_uncompress[0],20) != 0){
 																keyfound.Neg();
@@ -2972,7 +3034,7 @@ void *thread_process(void *vargp)	{
 														case 4:
 														case 5:
 															keyfound.ModMulK1order(&lambda2);
-															publickey = secp->ComputePublicKey(&keyfound);
+															publickey = ComputePublicKeyCached(&keyfound);
 															generate_binaddress_eth(publickey,(uint8_t*)publickeyhashrmd160_uncompress[0]);
 															if(memcmp(publickeyhashrmd160_endomorphism[l][k],publickeyhashrmd160_uncompress[0],20) != 0){
 																keyfound.Neg();
@@ -3197,7 +3259,7 @@ void *thread_process_vanity(void *vargp)	{
 				temp_stride.SetInt32(CPU_GRP_SIZE / 2);
 				temp_stride.Mult(&stride);
 				key_mpz.Add(&temp_stride);
-	 			startP = secp->ComputePublicKey(&key_mpz);
+	 			startP = ComputePublicKeyCached(&key_mpz);
 				key_mpz.Sub(&temp_stride);
 
 				for(i = 0; i < hLength; i++) {
@@ -3371,7 +3433,7 @@ void *thread_process_vanity(void *vargp)	{
 										keyfound.SetInt32(k);
 										keyfound.Mult(&stride);
 										keyfound.Add(&key_mpz);
-										publickey = secp->ComputePublicKey(&keyfound);
+										publickey = ComputePublicKeyCached(&keyfound);
 										
 										switch(l)	{
 											case 0:	//Original point, prefix 02
@@ -3432,7 +3494,7 @@ void *thread_process_vanity(void *vargp)	{
 										keyfound.Mult(&stride);
 										keyfound.Add(&key_mpz);
 										
-										publickey = secp->ComputePublicKey(&keyfound);
+										publickey = ComputePublicKeyCached(&keyfound);
 										secp->GetHash160(P2PKH,true,publickey,(uint8_t*)publickeyhashrmd160);
 										if(memcmp(publickeyhashrmd160_endomorphism[l][k],publickeyhashrmd160,20) != 0){
 											keyfound.Neg();
@@ -3460,7 +3522,7 @@ void *thread_process_vanity(void *vargp)	{
 										switch(l)	{
 											case 6:
 											case 7:
-												publickey = secp->ComputePublicKey(&keyfound);
+												publickey = ComputePublicKeyCached(&keyfound);
 												secp->GetHash160(P2PKH,false,publickey,(uint8_t*)publickeyhashrmd160_uncompress[0]);
 												if(memcmp(publickeyhashrmd160_endomorphism[l][k],publickeyhashrmd160_uncompress[0],20) != 0){
 													keyfound.Neg();
@@ -3470,7 +3532,7 @@ void *thread_process_vanity(void *vargp)	{
 											case 8:
 											case 9:
 												keyfound.ModMulK1order(&lambda);
-												publickey = secp->ComputePublicKey(&keyfound);
+												publickey = ComputePublicKeyCached(&keyfound);
 												secp->GetHash160(P2PKH,false,publickey,(uint8_t*)publickeyhashrmd160_uncompress[0]);
 												if(memcmp(publickeyhashrmd160_endomorphism[l][k],publickeyhashrmd160_uncompress[0],20) != 0){
 													keyfound.Neg();
@@ -3480,7 +3542,7 @@ void *thread_process_vanity(void *vargp)	{
 											case 10:
 											case 11:
 												keyfound.ModMulK1order(&lambda2);
-												publickey = secp->ComputePublicKey(&keyfound);
+												publickey = ComputePublicKeyCached(&keyfound);
 												secp->GetHash160(P2PKH,false,publickey,(uint8_t*)publickeyhashrmd160_uncompress[0]);
 												if(memcmp(publickeyhashrmd160_endomorphism[l][k],publickeyhashrmd160_uncompress[0],20) != 0){
 													keyfound.Neg();
@@ -3858,12 +3920,12 @@ void *thread_process_bsgs(void *vargp)	{
 				THREADOUTPUT = 1;
 			}
 		}
-		base_point = secp->ComputePublicKey(&base_key);
+		base_point = ComputePublicKeyCached(&base_key);
 		km.Set(&base_key);
 		km.Neg();
 		km.Add(&secp->order);
 		km.Sub(&intaux);
-		point_aux = secp->ComputePublicKey(&km);
+		point_aux = ComputePublicKeyCached(&km);
 		for(k = 0; k < bsgs_point_number ; k++)	{
 			if(bsgs_found[k] == 0)	{
 				startP  = secp->AddDirect(OriginalPointsBSGS[k],point_aux);
@@ -3949,7 +4011,7 @@ pn.y.ModAdd(&GSn[i].y);
 							if(r)	{
 								hextemp = keyfound.GetBase16();
 								printf("[+] Thread Key found privkey %s   \n",hextemp);
-								point_found = secp->ComputePublicKey(&keyfound);
+								point_found = ComputePublicKeyCached(&keyfound);
 								aux_c = secp->GetPublicKeyHex(OriginalPointsBSGScompressed[k],point_found);
 								printf("[+] Publickey %s\n",aux_c);
 #if defined(_WIN64) && !defined(__CYGWIN__)
@@ -4088,7 +4150,7 @@ void *thread_process_bsgs_random(void *vargp)	{
 				THREADOUTPUT = 1;
 			}
 		}
-		base_point = secp->ComputePublicKey(&base_key);
+		base_point = ComputePublicKeyCached(&base_key);
 
 		km.Set(&base_key);
 		km.Neg();
@@ -4096,7 +4158,7 @@ void *thread_process_bsgs_random(void *vargp)	{
 		
 		km.Add(&secp->order);
 		km.Sub(&intaux);
-		point_aux = secp->ComputePublicKey(&km);
+		point_aux = ComputePublicKeyCached(&km);
 
 
 		/* We need to test individually every point in BSGS_Q */
@@ -4198,7 +4260,7 @@ pn.y.ModAdd(&GSn[i].y);
 							if(r)	{
 								hextemp = keyfound.GetBase16();
 								printf("[+] Thread Key found privkey %s    \n",hextemp);
-								point_found = secp->ComputePublicKey(&keyfound);
+								point_found = ComputePublicKeyCached(&keyfound);
 								aux_c = secp->GetPublicKeyHex(OriginalPointsBSGScompressed[k],point_found);
 								printf("[+] Publickey %s\n",aux_c);
 #if defined(_WIN64) && !defined(__CYGWIN__)
@@ -4280,7 +4342,7 @@ int bsgs_secondcheck(Int *start_range,uint32_t a,uint32_t k_index,Int *privateke
 	base_key.Mult((uint64_t) a);
 	base_key.Add(start_range);
 
-	base_point = secp->ComputePublicKey(&base_key);
+	base_point = ComputePublicKeyCached(&base_key);
 	point_aux = secp->Negation(base_point);
 
 	/*
@@ -4315,7 +4377,7 @@ int bsgs_thirdcheck(Int *start_range,uint32_t a,uint32_t k_index,Int *privatekey
 	base_key.Mult(&BSGS_M2_double);
 	base_key.Add(start_range);
 
-	base_point = secp->ComputePublicKey(&base_key);
+	base_point = ComputePublicKeyCached(&base_key);
 	point_aux = secp->Negation(base_point);
 	
 	BSGS_S = secp->AddDirect(OriginalPointsBSGS[k_index],point_aux);
@@ -4333,7 +4395,7 @@ int bsgs_thirdcheck(Int *start_range,uint32_t a,uint32_t k_index,Int *privatekey
 				privatekey->Set(&calculatedkey);
 				privatekey->Add((uint64_t)(j+1));
 				privatekey->Add(&base_key);
-				point_aux = secp->ComputePublicKey(privatekey);
+				point_aux = ComputePublicKeyCached(privatekey);
 				if(point_aux.x.IsEqual(&OriginalPointsBSGS[k_index].x))	{
 					found = 1;
 				}
@@ -4342,7 +4404,7 @@ int bsgs_thirdcheck(Int *start_range,uint32_t a,uint32_t k_index,Int *privatekey
 					privatekey->Set(&calculatedkey);
 					privatekey->Sub((uint64_t)(j+1));
 					privatekey->Add(&base_key);
-					point_aux = secp->ComputePublicKey(privatekey);
+					point_aux = ComputePublicKeyCached(privatekey);
 					if(point_aux.x.IsEqual(&OriginalPointsBSGS[k_index].x))	{
 						found = 1;
 					}
@@ -4384,7 +4446,7 @@ void sleep_ms(int milliseconds)	{ // cross-platform sleep function
 
 
 void init_generator()	{
-	Point G = secp->ComputePublicKey(&stride);
+	Point G = ComputePublicKeyCached(&stride);
 	Point g;
 	g.Set(G);
 	Gn.reserve(CPU_GRP_SIZE / 2);
@@ -4432,7 +4494,7 @@ void *thread_bPload(void *vargp)	{
 	to = tt->to;
 	
 	km.Add((uint64_t)(CPU_GRP_SIZE / 2));
-	startP = secp->ComputePublicKey(&km);
+	startP = ComputePublicKeyCached(&km);
 	grp->Set(dx);
 	for(uint64_t s=0;s<nbStep;s++) {
 		for(i = 0; i < hLength; i++) {
@@ -4621,7 +4683,7 @@ void *thread_bPload_2blooms(void *vargp)	{
 	//to = tt->to;
 	
 	km.Add((uint64_t)(CPU_GRP_SIZE / 2));
-	startP = secp->ComputePublicKey(&km);
+	startP = ComputePublicKeyCached(&km);
 	grp->Set(dx);
 	for(uint64_t s=0;s<nbStep;s++) {
 		for(i = 0; i < hLength; i++) {
@@ -4895,14 +4957,14 @@ void *thread_process_bsgs_dance(void *vargp)	{
 			}
 		}
 		
-		base_point = secp->ComputePublicKey(&base_key);
+		base_point = ComputePublicKeyCached(&base_key);
 
 		km.Set(&base_key);
 		km.Neg();
 		
 		km.Add(&secp->order);
 		km.Sub(&intaux);
-		point_aux = secp->ComputePublicKey(&km);
+		point_aux = ComputePublicKeyCached(&km);
 		
 		for(k = 0; k < bsgs_point_number ; k++)	{
 			if(bsgs_found[k] == 0)	{
@@ -5003,7 +5065,7 @@ pn.y.ModAdd(&GSn[i].y);
 							if(r)	{
 								hextemp = keyfound.GetBase16();
 								printf("[+] Thread Key found privkey %s   \n",hextemp);
-								point_found = secp->ComputePublicKey(&keyfound);
+								point_found = ComputePublicKeyCached(&keyfound);
 								aux_c = secp->GetPublicKeyHex(OriginalPointsBSGScompressed[k],point_found);
 								printf("[+] Publickey %s\n",aux_c);
 #if defined(_WIN64) && !defined(__CYGWIN__)
@@ -5155,14 +5217,14 @@ void *thread_process_bsgs_backward(void *vargp)	{
 			}
 		}
 		
-		base_point = secp->ComputePublicKey(&base_key);
+		base_point = ComputePublicKeyCached(&base_key);
 
 		km.Set(&base_key);
 		km.Neg();
 		
 		km.Add(&secp->order);
 		km.Sub(&intaux);
-		point_aux = secp->ComputePublicKey(&km);
+		point_aux = ComputePublicKeyCached(&km);
 		
 		for(k = 0; k < bsgs_point_number ; k++)	{
 			if(bsgs_found[k] == 0)	{
@@ -5261,7 +5323,7 @@ pn.y.ModAdd(&GSn[i].y);
 							if(r)	{
 								hextemp = keyfound.GetBase16();
 								printf("[+] Thread Key found privkey %s   \n",hextemp);
-								point_found = secp->ComputePublicKey(&keyfound);
+								point_found = ComputePublicKeyCached(&keyfound);
 								aux_c = secp->GetPublicKeyHex(OriginalPointsBSGScompressed[k],point_found);
 								printf("[+] Publickey %s\n",aux_c);
 #if defined(_WIN64) && !defined(__CYGWIN__)
@@ -5439,14 +5501,14 @@ void *thread_process_bsgs_both(void *vargp)	{
 			}
 		}
 		
-		base_point = secp->ComputePublicKey(&base_key);
+		base_point = ComputePublicKeyCached(&base_key);
 
 		km.Set(&base_key);
 		km.Neg();
 		
 		km.Add(&secp->order);
 		km.Sub(&intaux);
-		point_aux = secp->ComputePublicKey(&km);
+		point_aux = ComputePublicKeyCached(&km);
 		
 		for(k = 0; k < bsgs_point_number ; k++)	{
 			if(bsgs_found[k] == 0)	{
@@ -5545,7 +5607,7 @@ void *thread_process_bsgs_both(void *vargp)	{
 								if(r)	{
 									hextemp = keyfound.GetBase16();
 									printf("[+] Thread Key found privkey %s   \n",hextemp);
-									point_found = secp->ComputePublicKey(&keyfound);
+									point_found = ComputePublicKeyCached(&keyfound);
 									aux_c = secp->GetPublicKeyHex(OriginalPointsBSGScompressed[k],point_found);
 									printf("[+] Publickey %s\n",aux_c);
 #if defined(_WIN64) && !defined(__CYGWIN__)
@@ -5762,8 +5824,9 @@ void menu() {
 	printf("-S          S is for SAVING in files BSGS data (Bloom filters and bPtable)\n");
 	printf("-6          to skip sha256 Checksum on data files");
 	printf("-t tn       Threads number, must be a positive integer\n");
-	printf("-v value    Search for vanity Address, only with -m vanity\n");
-	printf("-z value    Bloom size multiplier, only address,rmd160,vanity, xpoint, value >= 1\n");
+        printf("-v value    Search for vanity Address, only with -m vanity\n");
+        printf("-z value    Bloom size multiplier, only address,rmd160,vanity, xpoint, value >= 1\n");
+        printf("-L size     Enable public key cache with given number of entries (0 disable)\n");
 	printf("\nExample:\n\n");
 	printf("./keyhunt -m rmd160 -f tests/unsolvedpuzzles.rmd -b 66 -l compress -R -q -t 8\n\n");
 	printf("This line runs the program with 8 threads from the range 20000000000000000 to 40000000000000000 without stats output\n\n");
@@ -5805,7 +5868,7 @@ void writevanitykey(bool compressed,Int *key)	{
 	FILE *keys;
 	char *hextemp,*hexrmd,public_key_hex[131],address[50],rmdhash[20];
 	hextemp = key->GetBase16();
-	publickey = secp->ComputePublicKey(key);
+	publickey = ComputePublicKeyCached(key);
 	secp->GetPublicKeyHex(compressed,publickey,public_key_hex);
 	
 	secp->GetHash160(P2PKH,compressed,publickey,(uint8_t*)rmdhash);
@@ -5993,7 +6056,7 @@ void writekey(bool compressed,Int *key)	{
 	memset(address,0,50);
 	memset(public_key_hex,0,132);
 	hextemp = key->GetBase16();
-	publickey = secp->ComputePublicKey(key);
+	publickey = ComputePublicKeyCached(key);
 	secp->GetPublicKeyHex(compressed,publickey,public_key_hex);
 	secp->GetHash160(P2PKH,compressed,publickey,(uint8_t*)rmdhash);
 	hexrmd = tohex(rmdhash,20);
@@ -6025,7 +6088,7 @@ void writekeyeth(Int *key)	{
 	FILE *keys;
 	char *hextemp,address[43],hash[20];
 	hextemp = key->GetBase16();
-	publickey = secp->ComputePublicKey(key);
+	publickey = ComputePublicKeyCached(key);
 	generate_binaddress_eth(publickey,(unsigned char*)hash);
 	address[0] = '0';
 	address[1] = 'x';
