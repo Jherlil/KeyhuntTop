@@ -15,6 +15,7 @@
  * along with this program. If not, see <http://www.gnu.org/licenses/>.
 */
 
+#include <immintrin.h>
 #include "Int.h"
 #include "IntGroup.h"
 #include <cstdio>
@@ -79,8 +80,14 @@ void Int::CLEARFF() {
 // ------------------------------------------------
 
 void Int::Set(Int *a) {
+#if defined(__AVX2__)
+  __m256i v = _mm256_loadu_si256((__m256i*)a->bits64);
+  _mm256_storeu_si256((__m256i*)bits64, v);
+  bits64[4] = a->bits64[4];
+#else
   for (int i = 0; i<NB64BLOCK; i++)
-  	bits64[i] = a->bits64[i];
+        bits64[i] = a->bits64[i];
+#endif
 }
 
 // ------------------------------------------------
