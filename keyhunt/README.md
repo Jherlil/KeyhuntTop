@@ -96,6 +96,9 @@ First compile:
 ```
 make
 ```
+This build uses AVX2 optimizations and requires a CPU with AVX2 support.
+The random generator now uses the xoshiro256** algorithm for improved speed.
+An experimental GLV endomorphism implementation further accelerates scalar multiplication.
 
 if you have problems compiling the `main` version you can compile the `legacy` version
 

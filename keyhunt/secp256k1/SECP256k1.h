@@ -39,6 +39,8 @@ public:
   bool  EC(Point &p);
   
   Point ScalarMultiplication(Point &P,Int *scalar);
+  // Experimental GLV-based scalar multiplication
+  Point ScalarMultiplicationGLV(Point &P, Int *scalar);
   
   char* GetPublicKeyHex(bool compressed, Point &p);
   void GetPublicKeyHex(bool compressed, Point &pubKey,char *dst);
@@ -65,12 +67,18 @@ public:
   Point Double(Point &p);
   Point DoubleDirect(Point &p);
   Point Negation(Point &p);
+  // Endomorphism used for GLV decomposition
+  Point Endomorphism(Point &p);
 
   Point G;                 // Generator
   Int P;                   // Prime for the finite field
   Int   order;             // Curve order
+  Int lambda;              // Endomorphism lambda constant
+  Int beta;                // Endomorphism beta constant
 
 private:
+  // Split 256-bit scalar into two ~128-bit halves (placeholder for GLV)
+  void SplitScalar128(Int *k, Int *k1, Int *k2);
 
   uint8_t GetByte(char *str,int idx);
   Int GetY(Int x, bool isEven);
